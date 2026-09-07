@@ -1,89 +1,69 @@
-#issue 02
-import matplotlib.pyplot as plt
-import numpy as np
-
-class Tanque:
-    def __init__(self, nome, capacidade, lista=[1000, 2000, 5000, 10000]):
-        self.nome = nome
-        self.capacidade = capacidade
-        self.nivel_atual = 0
-        self.conjunto = lista
-
-    def simular(self):
-        tempos = []
-        niveis = []
-
-        for i, nivel in enumerate(self.conjunto):
-            self.nivel_atual = nivel
-            print(f"Medição {i+1}: {self.nivel_atual} litros")
-
-            tempos.append(i + 1)
-            niveis.append(self.nivel_atual)
-
-        plt.plot(tempos, niveis, marker='o')
-        plt.title("Nível de Água do Tanque")
-        plt.xlabel("Medição")
-        plt.ylabel("Nível (litros)")
-        plt.grid(True)
-        plt.show()
-
-    def atualizar_nivel(self, novo_nivel):
-        self.nivel_atual = novo_nivel
-
-    def mostrar_nivel(self):
-        print(f"Nível atual do tanque: {self.nivel_atual} litros")
+import csv
+import random
+from datetime import datetime, timedelta
 
 
-# Teste
-tanque = Tanque("Caixa d'água", 10000)
+class Bomba:
+    def __init__(self):
+        self.ligada = False
 
-tanque.atualizar_nivel(650)
-tanque.mostrar_nivel()
+    def ligar(self):
+        self.ligada = True
+        return round(random.uniform(2.5, 3.5), 2)  # consumo quando ligada
 
-tanque.simular()
+    def desligar(self):
+        self.ligada = False
+        return round(random.uniform(0.0, 0.3), 2)  # consumo em repouso
+
 
 class Tanque:
     def __init__(self, nome, capacidade):
         self.nome = nome
         self.capacidade = capacidade
-        self.nivel_atual = 0
+        self.nivel_atual = capacidade
+        self.bomba = Bomba()
 
-    def atualizar_nivel(self, novo_nivel):
-        self.nivel_atual = novo_nivel
-        print(f"Nova medição registrada: {self.nivel_atual} litros")
+    def atualizar_nivel(self):
+        """Simula uma nova medição: consome água e decide se a bomba liga."""
+        self.nivel_atual -= random.randint(5, 20)
+
+        if self.nivel_atual < 300:
+            self.nivel_atual = self.capacidade
+            consumo = self.bomba.ligar()
+            status = "Bomba Ligada"
+        else:
+            consumo = self.bomba.desligar()
+            status = "Normal"
+
+        return consumo, status
 
     def mostrar_nivel(self):
-        print(f"Nível atual do tanque: {self.nivel_atual} litros")
+        """Exibe o nível atual do tanque."""
+        print(f"Nível atual do tanque: {self.nivel_atual} L")
 
 
-# Teste
-tanque = Tanque("Caixa d'água", 10000)
+# Programa principal
+tanque = Tanque("Caixa d'água", 1000)
+hora = datetime(2026, 9, 5, 8, 0)
 
-tanque.mostrar_nivel()
+with open("medicoes.csv", "w", newline="") as arquivo:
+    escritor = csv.writer(arquivo)
+    escritor.writerow(["data_hora", "nivel_agua", "consumo_energia", "status"])
 
-tanque.atualizar_nivel(650)
-tanque.mostrar_nivel()
+    for i in range(50):
+        consumo, status = tanque.atualizar_nivel()
 
-tanque.atualizar_nivel(720)
-tanque.mostrar_nivel()
+        # Exibe em tempo real (critério de aceite da issue #02)
+        print(f"[{hora.strftime('%d/%m/%Y %H:%M')}] "
+              f"Nível: {tanque.nivel_atual} L | Consumo: {consumo} kWh | Status: {status}")
 
-tanque.atualizar_nivel(810)
-tanque.mostrar_nivel()
+        escritor.writerow([
+            hora.strftime("%d/%m/%Y %H:%M"),
+            tanque.nivel_atual,
+            consumo,
+            status
+        ])
 
-import matplotlib.pyplot as plt
+        hora += timedelta(minutes=10)
 
-def simular(self, tempo):
-    niveis_registrados = []
-    i = 0
-    while i < tempo and i < len(self.conjunto):
-        self.nivel_atual = self.conjunto[i]
-        print(self.nivel_atual)
-        niveis_registrados.append(self.nivel_atual)
-        i += 1
-
-    # Gráfico entra aqui, depois que o loop terminou
-    plt.plot(niveis_registrados, marker='o')
-    plt.title(f"Nível do tanque: {self.nome}")
-    plt.xlabel("Medição")
-    plt.ylabel("Nível (L)")
-    plt.show()
+print("\nArquivo medicoes.csv criado com sucesso!")
