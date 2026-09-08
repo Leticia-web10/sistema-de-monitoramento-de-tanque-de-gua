@@ -1,32 +1,48 @@
-import os
 class Tanque:
-    def __init__(self, nome, capacidade, lista=[1000,2000,5000,10000]):
+    def __init__(self, nome, capacidade):
         self.nome = nome
         self.capacidade = capacidade
         self.nivel_atual = 0
-        self.conjunto=lista
 
-    def simular(self, tempo):
+    def atualizar_nivel(self, nivel):
+        self.nivel_atual = nivel
 
-        i = 0
-        while i< tempo:
-            self.nivel_atual = self.conjunto[i]
-            print(self.nivel_atual)
-           # sleep(1000)
-           # chama o matplolib
-           #classe da interface
-            i+=1
+    def exibir(self):
+        percentual = (self.nivel_atual / self.capacidade) * 100
 
-        
-    def atualizar_nivel(self, novo_nivel):
-        self.nivel_atual = novo_nivel
+        print(f"\nTanque: {self.nome}")
+        print(f"Capacidade: {self.capacidade} L")
+        print(f"Nível atual: {self.nivel_atual} L")
+        print(f"Ocupação: {percentual:.1f}%")
 
-    def mostrar_nivel(self):
-        print(f"Nível atual do tanque: {self.nivel_atual} litros")
+        if self.nivel_atual < 0.2 * self.capacidade:
+            print("Alerta: nível baixo!")
+
+        if self.nivel_atual > 0.9 * self.capacidade:
+            print("Alerta: tanque quase cheio!")
 
 
-#testes
-tanque = Tanque("Caixa d'água", 1000)
-tanque.atualizar_nivel(650)
-tanque.mostrar_nivel()
-tanque.simular(5)
+# Cadastro do tanque
+nome = input("Nome do tanque: ")
+
+capacidade_input = input("Capacidade (500L): ")
+
+if capacidade_input.strip() == "":
+    capacidade = 500.0
+else:
+    capacidade = float(capacidade_input)
+
+tanque = Tanque(nome, capacidade)
+
+print("\nTanque foi cadastrado com sucesso!")
+
+# Simulação de atualização em tempo real
+while True:
+    entrada = input("\nDigite o nível atual (ou 'sair'): ")
+
+    if entrada.lower() == "sair":
+        break
+
+    nivel = float(entrada)
+    tanque.atualizar_nivel(nivel)
+    tanque.exibir()
