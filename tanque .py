@@ -48,4 +48,4 @@ criar_tabela()
 salvar_tanque(tanque)
 
 print("\nTanque cadastrado com sucesso!")
-tanque.exibir(
+tanque.exibir()
