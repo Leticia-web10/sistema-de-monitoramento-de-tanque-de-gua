@@ -4,9 +4,9 @@ import time
 
 
 def criar_tabela_medicoes():
-    """Cria a tabela 'medicoes' no banco, caso ainda não exista."""
     conexao = sqlite3.connect("tanques.db")
     cursor = conexao.cursor()
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS medicoes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -17,6 +17,7 @@ def criar_tabela_medicoes():
             data_hora TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
     conexao.commit()
     conexao.close()
 
