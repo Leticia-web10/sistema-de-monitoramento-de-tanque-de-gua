@@ -32,9 +32,9 @@ cd sistema-de-monitoramento-de-tanque-de-gua
 ```
 3.Execute o sistema:
 ```bash
-python main.py
+python tanque.py
 ```
-
+python medição.py
 ## Como usar
 
 Atualmente, o sistema está sendo desenvolvido e executado pelo console.
