@@ -2,11 +2,10 @@ import sqlite3
 import random
 import time
 
-
 def criar_tabela_medicoes():
-    """Cria a tabela 'medicoes' no banco, caso ainda não exista."""
     conexao = sqlite3.connect("tanques.db")
     cursor = conexao.cursor()
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS medicoes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -17,6 +16,7 @@ def criar_tabela_medicoes():
             data_hora TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
     conexao.commit()
     conexao.close()
 
@@ -81,20 +81,20 @@ class Tanque:
 
 
 # Programa principal
-criar_tabela_medicoes()
+if __name__ == "__main__":
+    criar_tabela_medicoes()
 
-nome = input("Nome do tanque: ")
-capacidade = float(input("Capacidade (L): "))
-tanque = Tanque(nome, capacidade)
+    nome = input("Nome do tanque: ")
+    capacidade = float(input("Capacidade (L): "))
+    tanque = Tanque(nome, capacidade)
 
-print("\nTanque pronto para monitoramento em tempo real.")
-print("Simulando novas medições a cada 2 segundos \n")
+    print("\nTanque pronto para monitoramento em tempo real.")
+    print("Simulando novas medições a cada 2 segundos \n")
 
-
-try:
-    while True:
-        consumo, status = tanque.atualizar_nivel()
-        tanque.exibir(consumo, status)
-        time.sleep(2)
-except KeyboardInterrupt:
-    print("\n\nMonitoramento encerrado.")
+    try:
+        while True:
+            consumo, status = tanque.atualizar_nivel()
+            tanque.exibir(consumo, status)
+            time.sleep(2)
+    except KeyboardInterrupt:
+        print("\n\nMonitoramento encerrado.")
