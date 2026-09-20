@@ -10,7 +10,7 @@ As seguintes tecnologias são utilizadas no desenvolvimento do projeto:
 
 - **Python:** linguagem utilizada no desenvolvimento do sistema.
 - **SQLite:** banco de dados utilizado para armazenar as medições do tanque.
-- **Tkinter:** utilizado na implementação das interfaces gráficas do sistema.
+- **Tkinter:** utilizado na implementação das interfaces gráficas do sistema, em instalações padrão do Python para Windows, já está incluído.
 - **Git e GitHub:** utilizados para controle de versão e organização do projeto.
 
 ## Pré-requisitos
@@ -179,5 +179,5 @@ Este projeto está sob a licença MIT. Consulte o arquivo [LICENSE.md](LICENSE.m
 
 Engenharia Elétrica — Sistemas e Computação  
 Universidade do Estado do Rio de Janeiro (UERJ)
-O Tkinter também é utilizado para as interfaces gráficas e, em instalações padrão do Python para Windows, já está incluído.
+
 
