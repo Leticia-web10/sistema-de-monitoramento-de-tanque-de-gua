@@ -2,6 +2,7 @@ import sqlite3
 import random
 import time
 
+
 def criar_tabela_medicoes():
     conexao = sqlite3.connect("tanques.db")
     cursor = conexao.cursor()
@@ -25,11 +26,13 @@ def salvar_medicao(tanque_nome, nivel, consumo_energia, status):
     """Salva uma medição completa (nível, consumo, status, data/hora) no banco."""
     conexao = sqlite3.connect("tanques.db")
     cursor = conexao.cursor()
+
     cursor.execute(
         """INSERT INTO medicoes (tanque_nome, nivel, consumo_energia, status)
            VALUES (?, ?, ?, ?)""",
         (tanque_nome, nivel, consumo_energia, status)
     )
+
     conexao.commit()
     conexao.close()
 
@@ -58,7 +61,9 @@ class Tanque:
 
     def atualizar_nivel(self):
         """Simula uma nova medição: o nível cai com o consumo de água e,
-        se ficar muito baixo, a bomba liga para reabastecer o tanque."""
+        se ficar muito baixo, a bomba liga para reabastecer o tanque.
+        """
+
         self.nivel_atual -= random.randint(5, 20)
 
         if self.nivel_atual < 0.2 * self.capacidade:
@@ -69,15 +74,30 @@ class Tanque:
             consumo = self.bomba.desligar()
             status = "Normal"
 
-        salvar_medicao(self.nome, self.nivel_atual, consumo, status)
+        salvar_medicao(
+            self.nome,
+            self.nivel_atual,
+            consumo,
+            status
+        )
+
         return consumo, status
 
     def exibir(self, consumo, status):
         """Exibe o nível atual do tanque em tempo real."""
+
         percentual = (self.nivel_atual / self.capacidade) * 100
+
         print(f"\nTanque: {self.nome}")
-        print(f"Nível atual: {self.nivel_atual} L de {self.capacidade} L ({percentual:.1f}%)")
-        print(f"Consumo de energia: {consumo} kWh | Status: {status}")
+        print(
+            f"Nível atual: {self.nivel_atual} L "
+            f"de {self.capacidade} L "
+            f"({percentual:.1f}%)"
+        )
+        print(
+            f"Consumo de energia: {consumo} kWh "
+            f"| Status: {status}"
+        )
 
 
 # Programa principal
@@ -86,6 +106,7 @@ if __name__ == "__main__":
 
     nome = input("Nome do tanque: ")
     capacidade = float(input("Capacidade (L): "))
+
     tanque = Tanque(nome, capacidade)
 
     print("\nTanque pronto para monitoramento em tempo real.")
@@ -96,5 +117,6 @@ if __name__ == "__main__":
             consumo, status = tanque.atualizar_nivel()
             tanque.exibir(consumo, status)
             time.sleep(2)
+
     except KeyboardInterrupt:
         print("\n\nMonitoramento encerrado.")
