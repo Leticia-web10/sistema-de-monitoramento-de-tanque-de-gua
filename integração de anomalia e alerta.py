@@ -1,742 +1,532 @@
 ﻿import sqlite3
 import tkinter as tk
 from tkinter import ttk, messagebox
+from statistics import mean, pstdev
 
 from medicao import criar_tabela_medicoes, Tanque
 
+# ===============================================================
+# CONFIGURAÇÕES
+# ===============================================================
+BANCO = "tanques.db"
+INTERVALO_MS = 2000
 
+# Parâmetros de alertas e anomalias (ajuste conforme a simulação)
+LIMITE_NIVEL_CRITICO_PCT = 0.20     # nível <= 20% da capacidade
+LIMITE_NIVEL_ALTO_PCT = 0.95        # nível >= 95% da capacidade
+LIMITE_QUEDA_VAZAMENTO_PCT = 0.05   # queda >= 5% da capacidade por medição
+MEDICOES_VAZAMENTO = 3              # 3 medições seguidas = 2 quedas
+LIMITE_CONSUMO_KWH = 3.5            # consumo acima disso é anormal
+
+JANELA_ANALISE = 20                 # quantas medições anteriores comparar
+MIN_HISTORICO = 5                   # mínimo de medições para a análise estatística
+LIMITE_Z = 3.0                      # desvios padrão para considerar anômalo
+
+# Posições na tupla da medição: (id, data_hora, nivel, consumo_energia, status)
+NIVEL = 2
+CONSUMO = 3
+
+# Textos
+ALERTA_NIVEL_CRITICO = "Nível de água crítico"
+ALERTA_NIVEL_ALTO = "Nível de água muito alto"
+ALERTA_VAZAMENTO = "Possível vazamento"
+ALERTA_CONSUMO = "Consumo de energia acima do limite"
+ANOMALIA_CONSUMO = "Consumo muito acima do padrão recente"
+ANOMALIA_QUEDA = "Queda de nível muito acima do padrão recente"
+
+NORMAL = "Normal"
+ANOMALA = "Anômala"
+
+# ===============================================================
+# ESTADO
+# ===============================================================
 tanque = None
-consumo_total = 0
+consumo_total = 0.0
 ligado = False
-# BANCO DE DADOS
+job = None  # id do agendamento do after(), para poder cancelar
 
 criar_tabela_medicoes()
 
 
-def buscar_medicoes(nome):
+# ===============================================================
+# BANCO DE DADOS
+# ===============================================================
+def buscar_ultimas(nome, limite):
+    """Últimas 'limite' medições do tanque, em ordem cronológica."""
+    conexao = sqlite3.connect(BANCO)
+    try:
+        cursor = conexao.cursor()
+        cursor.execute(
+            """
+            SELECT id, data_hora, nivel, consumo_energia, status
+            FROM medicoes
+            WHERE tanque_nome = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (nome, limite),
+        )
+        dados = cursor.fetchall()
+    finally:
+        conexao.close()
+    return dados[::-1]
 
-    conexao = sqlite3.connect("tanques.db")
-    cursor = conexao.cursor()
 
-    cursor.execute("""
-        SELECT id, data_hora, nivel, consumo_energia, status
-        FROM medicoes
-        WHERE tanque_nome = ?
-        ORDER BY id
-    """, (nome,))
-
-    dados = cursor.fetchall()
-
-    conexao.close()
-
+def buscar_historico(nome):
+    """Todas as medições do tanque, em ordem cronológica."""
+    conexao = sqlite3.connect(BANCO)
+    try:
+        cursor = conexao.cursor()
+        cursor.execute(
+            """
+            SELECT id, data_hora, nivel, consumo_energia, status
+            FROM medicoes
+            WHERE tanque_nome = ?
+            ORDER BY id
+            """,
+            (nome,),
+        )
+        dados = cursor.fetchall()
+    finally:
+        conexao.close()
     return dados
-# ALERTAS E ANOMALIA
 
+
+def apagar_medicoes(nome):
+    conexao = sqlite3.connect(BANCO)
+    try:
+        cursor = conexao.cursor()
+        cursor.execute("DELETE FROM medicoes WHERE tanque_nome = ?", (nome,))
+        conexao.commit()
+    finally:
+        conexao.close()
+
+
+# ===============================================================
+# LÓGICA DE ALERTAS E ANOMALIAS
+# ===============================================================
+def verificar_alertas(medicoes, capacidade):
+    """Regras fixas. Retorna lista de textos de alerta."""
+    if not medicoes:
+        return []
+
+    resultado = []
+    nivel = medicoes[-1][NIVEL]
+    consumo = medicoes[-1][CONSUMO]
+
+    if nivel <= LIMITE_NIVEL_CRITICO_PCT * capacidade:
+        resultado.append(ALERTA_NIVEL_CRITICO)
+
+    if nivel >= LIMITE_NIVEL_ALTO_PCT * capacidade:
+        resultado.append(ALERTA_NIVEL_ALTO)
+
+    if len(medicoes) >= MEDICOES_VAZAMENTO:
+        ultimas = medicoes[-MEDICOES_VAZAMENTO:]
+        limite_queda = LIMITE_QUEDA_VAZAMENTO_PCT * capacidade
+        quedas = [
+            ultimas[i][NIVEL] - ultimas[i + 1][NIVEL]
+            for i in range(len(ultimas) - 1)
+        ]
+        if all(q >= limite_queda for q in quedas):
+            resultado.append(ALERTA_VAZAMENTO)
+
+    if consumo > LIMITE_CONSUMO_KWH:
+        resultado.append(ALERTA_CONSUMO)
+
+    return resultado
+
+
+def z_score(valor, amostra, desvio_minimo):
+    """Quantos desvios padrão 'valor' está acima da média da amostra."""
+    desvio = max(pstdev(amostra), desvio_minimo)
+    return (valor - mean(amostra)) / desvio
+
+
+def analisar_anomalias(medicoes, capacidade):
+    """
+    Análise estatística: compara a última medição com as anteriores.
+    Retorna lista de textos de anomalia (vazia se não houver).
+    """
+    historico = medicoes[:-1][-JANELA_ANALISE:]
+    if len(historico) < MIN_HISTORICO:
+        return []
+
+    anomalias = []
+    atual = medicoes[-1]
+
+    # Consumo de energia
+    consumos = [m[CONSUMO] for m in historico]
+    if z_score(atual[CONSUMO], consumos, 0.01) > LIMITE_Z:
+        anomalias.append(ANOMALIA_CONSUMO)
+
+    # Queda de nível (positivo = nível diminuiu)
+    quedas = [
+        historico[i][NIVEL] - historico[i + 1][NIVEL]
+        for i in range(len(historico) - 1)
+    ]
+    queda_atual = medicoes[-2][NIVEL] - atual[NIVEL]
+    if len(quedas) >= 2:
+        # piso de 0,5% da capacidade evita z enorme se o histórico for muito estável
+        if z_score(queda_atual, quedas, 0.005 * capacidade) > LIMITE_Z:
+            anomalias.append(ANOMALIA_QUEDA)
+
+    return anomalias
+
+
+def avaliar(medicoes, capacidade):
+    """
+    Junta alertas e análise estatística.
+    Retorna (classificacao, mensagens), com classificacao NORMAL ou ANOMALA.
+
+    Nível crítico/alto são só alertas (estados esperados do tanque).
+    Vazamento, consumo acima do limite e anomalias estatísticas
+    tornam a medição ANOMALA.
+    """
+    resultado_alertas = verificar_alertas(medicoes, capacidade)
+    anomalias = analisar_anomalias(medicoes, capacidade)
+
+    alertas_anomalos = {ALERTA_VAZAMENTO, ALERTA_CONSUMO}
+    anomala = bool(anomalias) or any(a in alertas_anomalos for a in resultado_alertas)
+
+    mensagens = resultado_alertas + [a for a in anomalias if a not in resultado_alertas]
+    return (ANOMALA if anomala else NORMAL), mensagens
+
+
+# ===============================================================
+# ALERTAS NA INTERFACE
+# ===============================================================
 def verificar_anomalias():
-
     if tanque is None:
         return
 
-    medicoes = buscar_medicoes(tanque.nome)
+    medicoes = buscar_ultimas(tanque.nome, JANELA_ANALISE + 1)
 
     if not medicoes:
-
-        classificacao_label.config(
-            text="Classificação: -"
-        )
-
-        alerta_label.config(
-            text="Nenhuma medição disponível."
-        )
-
+        classificacao_label.config(text="Classificação: -", fg="black")
+        alerta_label.config(text="Nenhuma medição disponível.", fg="black")
         return
 
-    ultima = medicoes[-1]
+    classificacao, mensagens = avaliar(medicoes, tanque.capacidade)
 
-    nivel = ultima[2]
-    consumo = ultima[3]
-
-    alertas = []
-    anomalias = []
-
-    # Nível crítico
-    if nivel <= 0.20 * tanque.capacidade:
-
-        alertas.append(
-            "Nível de água crítico"
-        )
-
-        anomalias.append(
-            "Nível crítico"
-        )
-
-    # Possível vazamento
-    if len(medicoes) >= 3:
-
-        nivel1 = medicoes[-1][2]
-        nivel2 = medicoes[-2][2]
-        nivel3 = medicoes[-3][2]
-
-        queda1 = nivel2 - nivel1
-        queda2 = nivel3 - nivel2
-
-        if queda1 >= 15 and queda2 >= 15:
-
-            alertas.append(
-                "Possível vazamento"
-            )
-
-            anomalias.append(
-                "Queda anormal do nível"
-            )
-
-    # Consumo anormal
-    if consumo > 3.5:
-
-        alertas.append(
-            "Consumo de energia anormal"
-        )
-
-        anomalias.append(
-            "Consumo anormal"
-        )
-
-    if anomalias:
-
-        classificacao_label.config(
-            text="Classificação: Anômala"
-        )
-
-        alerta_label.config(
-            text="ALERTA:\n" + "\n".join(alertas)
-        )
-
+    if classificacao == ANOMALA:
+        classificacao_label.config(text="Classificação: Anômala", fg="red")
     else:
+        classificacao_label.config(text="Classificação: Normal", fg="green")
 
-        classificacao_label.config(
-            text="Classificação: Normal"
-        )
+    if mensagens:
+        alerta_label.config(text="ALERTA:\n" + "\n".join(mensagens), fg="red")
+    else:
+        alerta_label.config(text="Nenhum alerta.", fg="black")
 
-        alerta_label.config(
-            text="Nenhum alerta."
-        )
 
-# ATUALIZAR MONITORAMENTO
-
+# ===============================================================
+# MONITORAMENTO
+# ===============================================================
 def atualizar_interface():
+    global consumo_total, job
 
-    global consumo_total
+    job = None
 
-    # Se estiver desligado, não faz nova medição
+    # Desligado: não faz nova medição
     if tanque is None or not ligado:
         return
 
     consumo, status = tanque.atualizar_nivel()
-
     consumo_total += consumo
 
-    percentual = (
-        tanque.nivel_atual /
-        tanque.capacidade
-    ) * 100
+    percentual = (tanque.nivel_atual / tanque.capacidade) * 100
 
-    nivel_label.config(
-        text=f"Nível: {tanque.nivel_atual:.1f} L"
-    )
-
-    percentual_label.config(
-        text=f"Ocupação: {percentual:.1f}%"
-    )
-
+    nivel_label.config(text=f"Nível: {tanque.nivel_atual:.1f} L")
+    percentual_label.config(text=f"Ocupação: {percentual:.1f}%")
     barra["value"] = percentual
-
-    consumo_label.config(
-        text=f"Consumo atual: {consumo:.2f} kWh"
-    )
-
-    total_label.config(
-        text=f"Consumo total: {consumo_total:.2f} kWh"
-    )
-
-    status_label.config(
-        text="Status: Tanque ligado"
-    )
+    consumo_label.config(text=f"Consumo atual: {consumo:.2f} kWh")
+    total_label.config(text=f"Consumo total: {consumo_total:.2f} kWh")
+    status_label.config(text="Status: Tanque ligado")
+    bomba_label.config(text=f"Bomba: {status}")
 
     verificar_anomalias()
 
-    janela.after(
-        2000,
-        atualizar_interface
-    )
-# LIGAR TANQUE
+    job = janela.after(INTERVALO_MS, atualizar_interface)
+
 
 def ligar_tanque():
+    global tanque, consumo_total, ligado
 
-    global tanque
-    global consumo_total
-    global ligado
-
-    nome = nome_entry.get().strip()
-
-    capacidade_texto = capacidade_entry.get().strip()
-
-    if nome == "":
-
-        messagebox.showwarning(
-            "Atenção",
-            "Digite o nome do tanque."
-        )
-
+    # Evita dois loops simultâneos
+    if ligado:
         return
 
-    try:
-
-        capacidade = float(
-            capacidade_texto
-        )
-
-        if capacidade <= 0:
-            raise ValueError
-
-    except ValueError:
-
-        messagebox.showwarning(
-            "Atenção",
-            "Digite uma capacidade válida."
-        )
-
-        return
-
-    # Cria o tanque somente uma vez
+    # Cria o tanque apenas se ainda não existe
     if tanque is None:
+        nome = nome_entry.get().strip()
+        capacidade_texto = capacidade_entry.get().strip().replace(",", ".")
 
-        tanque = Tanque(
-            nome,
-            capacidade
-        )
+        if nome == "":
+            messagebox.showwarning("Atenção", "Digite o nome do tanque.")
+            return
 
-        consumo_total = 0
+        try:
+            capacidade = float(capacidade_texto)
+            if capacidade <= 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showwarning("Atenção", "Digite uma capacidade válida.")
+            return
 
-    # Liga o tanque
+        tanque = Tanque(nome, capacidade)
+        consumo_total = 0.0
+
     ligado = True
-
     tanque.bomba.ligada = True
 
-    nome_entry.config(
-        state="disabled"
-    )
+    nome_entry.config(state="disabled")
+    capacidade_entry.config(state="disabled")
+    ligar_button.config(state="disabled")
+    desligar_button.config(state="normal")
+    novo_button.config(state="disabled")
 
-    capacidade_entry.config(
-        state="disabled"
-    )
-
-    ligar_button.config(
-        state="disabled"
-    )
-
-    desligar_button.config(
-        state="normal"
-    )
-
-    status_label.config(
-        text="Status: Tanque ligado"
-    )
-
-    mensagem.config(
-        text="Tanque ligado.",
-        fg="green"
-    )
+    status_label.config(text="Status: Tanque ligado")
+    mensagem.config(text="Tanque ligado.", fg="green")
 
     atualizar_interface()
 
-# DESLIGAR TANQUE
 
 def desligar_tanque():
-
-    global ligado
+    global ligado, job
 
     if tanque is None:
         return
 
-    # Impede novas medições
+    # Impede novas medições e cancela o agendamento pendente
     ligado = False
+    if job is not None:
+        janela.after_cancel(job)
+        job = None
 
-    # Desliga a bomba
     tanque.bomba.ligada = False
 
-    status_label.config(
-        text="Status: Tanque desligado"
-    )
+    status_label.config(text="Status: Tanque desligado")
+    bomba_label.config(text="Bomba: desligada")
+    alerta_label.config(text="Tanque desligado.", fg="black")
+    classificacao_label.config(text="Classificação: -", fg="black")
 
-    alerta_label.config(
-        text="Tanque desligado."
-    )
+    ligar_button.config(state="normal")
+    desligar_button.config(state="disabled")
+    novo_button.config(state="normal")
 
-    classificacao_label.config(
-        text="Classificação: -"
-    )
+    mensagem.config(text="Tanque desligado. Histórico mantido.", fg="red")
 
-    ligar_button.config(
-        state="normal"
-    )
 
-    desligar_button.config(
-        state="disabled"
-    )
+def novo_tanque():
+    """Permite monitorar outro tanque sem reiniciar o programa."""
+    global tanque, consumo_total
 
-    mensagem.config(
-        text="Tanque desligado.",
-        fg="red"
-    )
-
-# CONSULTAR HISTÓRICO
-
-def consultar_historico():
-
-    if tanque is not None:
-        nome = tanque.nome
-    else:
-        nome = nome_entry.get().strip()
-
-    if nome == "":
-
-        mensagem.config(
-            text="Digite o nome do tanque.",
-            fg="red"
-        )
-
+    if ligado:
         return
 
-    medicoes = buscar_medicoes(nome)
+    tanque = None
+    consumo_total = 0.0
+
+    nome_entry.config(state="normal")
+    capacidade_entry.config(state="normal")
+    nome_entry.delete(0, tk.END)
+    capacidade_entry.delete(0, tk.END)
+
+    nivel_label.config(text="Nível: -")
+    percentual_label.config(text="Ocupação: -")
+    barra["value"] = 0
+    consumo_label.config(text="Consumo atual: -")
+    total_label.config(text="Consumo total: -")
+    status_label.config(text="Status: -")
+    bomba_label.config(text="Bomba: -")
+    classificacao_label.config(text="Classificação: -", fg="black")
+    alerta_label.config(text="Nenhum alerta.", fg="black")
+
+    novo_button.config(state="disabled")
+    mensagem.config(text="Informe os dados do novo tanque.", fg="black")
+
+
+# ===============================================================
+# HISTÓRICO
+# ===============================================================
+def consultar_historico():
+    nome = tanque.nome if tanque is not None else nome_entry.get().strip()
+
+    if nome == "":
+        mensagem.config(text="Digite o nome do tanque.", fg="red")
+        return
+
+    medicoes = buscar_historico(nome)
 
     for item in tabela.get_children():
         tabela.delete(item)
 
     if not medicoes:
-
-        mensagem.config(
-            text=f"Nenhuma medição encontrada para '{nome}'.",
-            fg="red"
-        )
-
+        mensagem.config(text=f"Nenhuma medição encontrada para '{nome}'.", fg="red")
         return
 
-    for medicao in medicoes:
-
+    for m in medicoes:
         tabela.insert(
             "",
             "end",
-            values=(
-                nome,
-                f"{medicao[2]:.1f} L",
-                f"{medicao[3]:.2f} kWh",
-                medicao[4],
-                medicao[1]
-            )
+            values=(nome, f"{m[2]:.1f} L", f"{m[3]:.2f} kWh", m[4], m[1]),
         )
 
-    mensagem.config(
-        text=f"{len(medicoes)} medição(ões) encontrada(s).",
-        fg="green"
-    )
-# LIMPAR HISTÓRICO
+    mensagem.config(text=f"{len(medicoes)} medição(ões) encontrada(s).", fg="green")
+
 
 def limpar_historico():
+    nome = tanque.nome if tanque is not None else nome_entry.get().strip()
 
-    resposta = messagebox.askyesno(
-        "Confirmar",
-        "Deseja limpar o histórico?"
-    )
-
-    if not resposta:
+    if nome == "":
+        mensagem.config(text="Digite o nome do tanque.", fg="red")
         return
 
-    conexao = sqlite3.connect(
-        "tanques.db"
-    )
+    if ligado:
+        messagebox.showwarning(
+            "Atenção", "Desligue o tanque antes de limpar o histórico."
+        )
+        return
 
-    cursor = conexao.cursor()
+    if not messagebox.askyesno(
+        "Confirmar", f"Apagar o histórico do tanque '{nome}'?"
+    ):
+        return
 
-    cursor.execute(
-        "DELETE FROM medicoes"
-    )
-
-    conexao.commit()
-
-    conexao.close()
+    apagar_medicoes(nome)
 
     for item in tabela.get_children():
         tabela.delete(item)
 
-    mensagem.config(
-        text="Histórico limpo.",
-        fg="green"
-    )
+    mensagem.config(text=f"Histórico de '{nome}' apagado.", fg="green")
 
 
-# =========================
+def ao_fechar():
+    if job is not None:
+        janela.after_cancel(job)
+    janela.destroy()
+
+
+# ===============================================================
 # JANELA
-# =========================
-
+# ===============================================================
 janela = tk.Tk()
+janela.title("Monitoramento do Tanque")
+janela.geometry("1250x690")
+janela.protocol("WM_DELETE_WINDOW", ao_fechar)
 
-janela.title(
-    "Monitoramento do Tanque"
-)
+tk.Label(janela, text="Monitoramento do Tanque", font=("Arial", 18)).pack(pady=5)
 
-janela.geometry(
-    "950x1100"
-)
+corpo = tk.Frame(janela)
+corpo.pack(fill="both", expand=True, padx=10, pady=5)
 
-# =========================
-# TÍTULO
-# =========================
+# Monitoramento à esquerda e histórico à direita
+frame_monitor = tk.Frame(corpo)
+frame_monitor.pack(side="left", fill="y", padx=(0, 15))
 
-titulo = tk.Label(
-    janela,
-    text="Monitoramento do Tanque",
-    font=("Arial", 20)
-)
+frame_historico = tk.Frame(corpo)
+frame_historico.pack(side="right", fill="both", expand=True)
 
-titulo.pack(
-    pady=15
-)
+# ---------------------------------------------------------------
+# Coluna da esquerda: Monitoramento
+# ---------------------------------------------------------------
+tk.Label(frame_monitor, text="Nome do tanque:").pack(pady=(10, 0))
+nome_entry = tk.Entry(frame_monitor, width=30)
+nome_entry.pack(pady=5)
 
-# NOME
+tk.Label(frame_monitor, text="Capacidade (L):").pack()
+capacidade_entry = tk.Entry(frame_monitor, width=30)
+capacidade_entry.pack(pady=5)
 
-tk.Label(
-    janela,
-    text="Nome do tanque:"
-).pack()
+nivel_label = tk.Label(frame_monitor, text="Nível: -", font=("Arial", 12))
+nivel_label.pack(pady=1)
 
-nome_entry = tk.Entry(
-    janela,
-    width=30
-)
+percentual_label = tk.Label(frame_monitor, text="Ocupação: -", font=("Arial", 12))
+percentual_label.pack(pady=1)
 
-nome_entry.pack(
-    pady=5
-)
+barra = ttk.Progressbar(frame_monitor, length=400, mode="determinate", maximum=100)
+barra.pack(pady=4)
 
+consumo_label = tk.Label(frame_monitor, text="Consumo atual: -", font=("Arial", 12))
+consumo_label.pack(pady=1)
 
-# =========================
-# CAPACIDADE
-# =========================
+total_label = tk.Label(frame_monitor, text="Consumo total: -", font=("Arial", 12))
+total_label.pack(pady=1)
 
-tk.Label(
-    janela,
-    text="Capacidade (L):"
-).pack()
+status_label = tk.Label(frame_monitor, text="Status: -", font=("Arial", 12))
+status_label.pack(pady=1)
 
-capacidade_entry = tk.Entry(
-    janela,
-    width=30
-)
+bomba_label = tk.Label(frame_monitor, text="Bomba: -", font=("Arial", 12))
+bomba_label.pack(pady=1)
 
-capacidade_entry.pack(
-    pady=5
-)
-# NÍVEL
+frame_controle = tk.Frame(frame_monitor)
+frame_controle.pack(pady=6)
 
-nivel_label = tk.Label(
-    janela,
-    text="Nível: -",
-    font=("Arial", 14)
-)
-
-nivel_label.pack(
-    pady=5
-)
-
-
-percentual_label = tk.Label(
-    janela,
-    text="Ocupação: -",
-    font=("Arial", 14)
-)
-
-percentual_label.pack(
-    pady=5
-)
-
-
-# =========================
-# BARRA
-# =========================
-
-barra = ttk.Progressbar(
-    janela,
-    length=400,
-    mode="determinate"
-)
-
-barra.pack(
-    pady=10
-)
-
-# CONSUMO
-
-consumo_label = tk.Label(
-    janela,
-    text="Consumo atual: -",
-    font=("Arial", 14)
-)
-
-consumo_label.pack(
-    pady=5
-)
-
-
-total_label = tk.Label(
-    janela,
-    text="Consumo total: -",
-    font=("Arial", 14)
-)
-
-total_label.pack(
-    pady=5
-)
-
-# STATUS
-
-status_label = tk.Label(
-    janela,
-    text="Status: -",
-    font=("Arial", 14)
-)
-
-status_label.pack(
-    pady=5
-)
-
-# BOTÕES LIGAR/DESLIGAR
-
-frame_controle = tk.Frame(
-    janela
-)
-
-frame_controle.pack(
-    pady=10
-)
-
-
-ligar_button = tk.Button(
-    frame_controle,
-    text="Ligar tanque",
-    command=ligar_tanque
-)
-
-ligar_button.pack(
-    side="left",
-    padx=5
-)
-
+ligar_button = tk.Button(frame_controle, text="Ligar tanque", command=ligar_tanque)
+ligar_button.pack(side="left", padx=5)
 
 desligar_button = tk.Button(
-    frame_controle,
-    text="Desligar tanque",
-    command=desligar_tanque,
-    state="disabled"
+    frame_controle, text="Desligar tanque", command=desligar_tanque, state="disabled"
 )
+desligar_button.pack(side="left", padx=5)
 
-desligar_button.pack(
-    side="left",
-    padx=5
+novo_button = tk.Button(
+    frame_controle, text="Novo tanque", command=novo_tanque, state="disabled"
 )
+novo_button.pack(side="left", padx=5)
 
-# ALERTAS
-
-tk.Label(
-    janela,
-    text="Alertas e anomalias",
-    font=("Arial", 16)
-).pack(
-    pady=10
-)
-
+tk.Label(frame_monitor, text="Alertas e anomalias", font=("Arial", 14)).pack(pady=4)
 
 classificacao_label = tk.Label(
-    janela,
-    text="Classificação: -",
-    font=("Arial", 12)
+    frame_monitor, text="Classificação: -", font=("Arial", 12, "bold")
 )
-
 classificacao_label.pack()
 
+alerta_label = tk.Label(frame_monitor, text="Nenhum alerta.", font=("Arial", 12))
+alerta_label.pack(pady=5)
 
-alerta_label = tk.Label(
-    janela,
-    text="Nenhum alerta.",
-    font=("Arial", 12)
+# ---------------------------------------------------------------
+# Mensagem (fica embaixo, visível o tempo todo)
+# ---------------------------------------------------------------
+mensagem = tk.Label(janela, text="", font=("Arial", 11))
+mensagem.pack(side="bottom", pady=5, before=corpo)
+
+# ---------------------------------------------------------------
+# Coluna da direita: Histórico
+# ---------------------------------------------------------------
+tk.Label(frame_historico, text="Histórico de Medições", font=("Arial", 14)).pack(pady=(10, 0))
+
+frame_botoes = tk.Frame(frame_historico)
+frame_botoes.pack(pady=10)
+
+tk.Button(frame_botoes, text="Consultar histórico", command=consultar_historico).pack(
+    side="left", padx=5
+)
+tk.Button(frame_botoes, text="Limpar", command=limpar_historico).pack(
+    side="left", padx=5
 )
 
-alerta_label.pack(
-    pady=5
-)
+frame_tabela = tk.Frame(frame_historico)
+frame_tabela.pack(padx=20, pady=10, fill="both", expand=True)
 
+colunas = ("tanque", "nivel", "consumo", "status", "data_hora")
+cabecalhos = {
+    "tanque": ("Tanque", 120),
+    "nivel": ("Nível", 100),
+    "consumo": ("Consumo", 120),
+    "status": ("Status", 150),
+    "data_hora": ("Data/Hora", 180),
+}
 
-# =========================
-# MENSAGEM
-# =========================
+tabela = ttk.Treeview(frame_tabela, columns=colunas, show="headings", height=15)
+for col, (texto, largura) in cabecalhos.items():
+    tabela.heading(col, text=texto)
+    tabela.column(col, width=largura)
 
-mensagem = tk.Label(
-    janela,
-    text="",
-    font=("Arial", 11)
-)
+tabela.pack(side="left", fill="both", expand=True)
 
-mensagem.pack(
-    pady=5
-)
-
-
-# =========================
-# HISTÓRICO
-# =========================
-
-tk.Label(
-    janela,
-    text="Histórico de Medições",
-    font=("Arial", 16)
-).pack(
-    pady=10
-)
-
-
-frame_botoes = tk.Frame(
-    janela
-)
-
-frame_botoes.pack(
-    pady=5
-)
-
-
-tk.Button(
-    frame_botoes,
-    text="Consultar histórico",
-    command=consultar_historico
-).pack(
-    side="left",
-    padx=5
-)
-
-
-tk.Button(
-    frame_botoes,
-    text="Limpar",
-    command=limpar_historico
-).pack(
-    side="left",
-    padx=5
-)
-
-
-# =========================
-# TABELA
-# =========================
-
-frame_tabela = tk.Frame(
-    janela
-)
-
-frame_tabela.pack(
-    padx=20,
-    pady=10,
-    fill="both",
-    expand=True
-)
-
-
-colunas = (
-    "tanque",
-    "nivel",
-    "consumo",
-    "status",
-    "data_hora"
-)
-
-
-tabela = ttk.Treeview(
-    frame_tabela,
-    columns=colunas,
-    show="headings",
-    height=10
-)
-
-tabela.heading(
-    "tanque",
-    text="Tanque"
-)
-
-tabela.heading(
-    "nivel",
-    text="Nível"
-)
-
-tabela.heading(
-    "consumo",
-    text="Consumo"
-)
-
-tabela.heading(
-    "status",
-    text="Status"
-)
-
-tabela.heading(
-    "data_hora",
-    text="Data/Hora"
-)
-
-
-tabela.column(
-    "tanque",
-    width=120
-)
-
-tabela.column(
-    "nivel",
-    width=100
-)
-
-tabela.column(
-    "consumo",
-    width=120
-)
-
-tabela.column(
-    "status",
-    width=150
-)
-
-tabela.column(
-    "data_hora",
-    width=180
-)
-
-
-tabela.pack(
-    side="left",
-    fill="both",
-    expand=True
-)
-# ROLAGEM
-scroll = ttk.Scrollbar(
-    frame_tabela,
-    orient="vertical",
-    command=tabela.yview
-)
-
-scroll.pack(
-    side="right",
-    fill="y"
-)
-
-tabela.configure(
-    yscrollcommand=scroll.set
-)
-
-# INICIAR
+scroll = ttk.Scrollbar(frame_tabela, orient="vertical", command=tabela.yview)
+scroll.pack(side="right", fill="y")
+tabela.configure(yscrollcommand=scroll.set)
 
 janela.mainloop()
