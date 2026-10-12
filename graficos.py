@@ -5,10 +5,6 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
 
-# Guarda o agendamento do after para não acumular atualizações
-job = None
-
-
 def buscar_medicoes(nome_tanque):
     conexao = sqlite3.connect("tanques.db")
     cursor = conexao.cursor()
@@ -27,8 +23,6 @@ def buscar_medicoes(nome_tanque):
 
 
 def atualizar_graficos():
-    global job
-
     nome_tanque = nome_entry.get().strip()
 
     if nome_tanque == "":
@@ -49,16 +43,11 @@ def atualizar_graficos():
         for widget in frame_graficos.winfo_children():
             widget.destroy()
 
-        job = janela.after(2000, atualizar_graficos)
+        janela.after(2000, atualizar_graficos)
         return
 
-    total = len(medicoes)
-
-    # Mostra só as últimas 30 medições para o gráfico não travar
-    medicoes = medicoes[-30:]
-
     mensagem.config(
-        text=f"{total} medição(ões) encontrada(s). Mostrando as últimas {len(medicoes)}.",
+        text=f"{len(medicoes)} medição(ões) encontrada(s).",
         fg="green"
     )
 
@@ -82,9 +71,10 @@ def atualizar_graficos():
 
     grafico_nivel.set_title("Variação do nível de água")
     grafico_nivel.set_ylabel("Nível (L)")
+    grafico_nivel.set_xlabel("Data/Hora")
     grafico_nivel.tick_params(
         axis="x",
-        labelbottom=False
+        rotation=45
     )
     grafico_nivel.grid(True)
 
@@ -99,9 +89,10 @@ def atualizar_graficos():
 
     grafico_consumo.set_title("Variação do consumo de energia")
     grafico_consumo.set_ylabel("Consumo (kWh)")
+    grafico_consumo.set_xlabel("Data/Hora")
     grafico_consumo.tick_params(
         axis="x",
-        labelbottom=False
+        rotation=45
     )
     grafico_consumo.grid(True)
 
@@ -120,12 +111,10 @@ def atualizar_graficos():
     )
 
     # Atualiza os gráficos novamente após 2 segundos
-    job = janela.after(2000, atualizar_graficos)
+    janela.after(2000, atualizar_graficos)
 
 
 def iniciar_graficos():
-    global job
-
     nome_tanque = nome_entry.get().strip()
 
     if nome_tanque == "":
@@ -134,11 +123,6 @@ def iniciar_graficos():
             "Digite o nome do tanque."
         )
         return
-
-    # Cancela a atualização anterior antes de iniciar outra
-    if job is not None:
-        janela.after_cancel(job)
-        job = None
 
     atualizar_graficos()
 
